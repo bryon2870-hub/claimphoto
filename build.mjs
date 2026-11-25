@@ -25,7 +25,7 @@ writeFileSync("dist/ClaimPhoto.html", html);
 const build_id = createHash("sha256").update(html).digest("hex").slice(0, 10);
 mkdirSync("dist/site", { recursive: true });
 writeFileSync("dist/site/index.html", html);
-writeFileSync("dist/site/sw.js", readFileSync("src/sw.js", "utf8").replace("__BUILD__", build_id));
+writeFileSync("dist/site/sw.js", readFileSync("src/sw.js", "utf8").replaceAll("__BUILD__", build_id));
 copyFileSync("src/manifest.webmanifest", "dist/site/manifest.webmanifest");
 for (const f of readdirSync("src/icons")) copyFileSync("src/icons/" + f, "dist/site/" + f);
 writeFileSync("dist/site/.nojekyll", "");

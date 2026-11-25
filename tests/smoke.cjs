@@ -204,6 +204,12 @@ async function openReport(page, name = "Cam Test") {
     await p.evaluate(() => navigator.serviceWorker.ready); const ctl = await p.evaluate(async () => { await navigator.serviceWorker.ready; return !!navigator.serviceWorker.getRegistration; });
     if (!ctl) throw new Error("no service worker support");
   });
+  await test("PWA: service worker cache name has a real build id (placeholder replaced)", async (p) => {
+    await p.goto(site.url); await p.waitForSelector("text=+ New Report");
+    const sw = await p.evaluate(async () => (await fetch("sw.js")).text());
+    if (/__BUILD__/.test(sw.split("\n").filter((l) => l.startsWith("const CACHE")).join())) throw new Error("CACHE name still contains the __BUILD__ placeholder");
+    if (!/const CACHE = "claimphoto-[0-9a-f]{10}"/.test(sw)) throw new Error("CACHE name is not claimphoto-<10 hex chars>");
+  });
   await test("PWA: works fully offline after first load (reload with network off)", async (p) => {
     await p.goto(site.url); await p.waitForSelector("text=+ New Report"); await p.evaluate(() => navigator.serviceWorker.ready);
     await p.reload(); await p.waitForTimeout(800); // now controlled by the SW
