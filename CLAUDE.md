@@ -4,6 +4,7 @@ Offline photo-report app for field insurance adjusters. Builds to ONE self-conta
 
 ## Layout
 - `src/camera.jsx`  – in-app camera (live viewfinder, multi-shot, flip, GPS stamp) – written in JSX
+- `src/backup.js`, `src/BackupPanel.jsx` – backup/export/import (pure logic + panel UI)
 - `src/app.js`      – all React components (compiled-style JS using React.createElement; new code may use JSX)
 - `src/styles.css`  – all CSS
 - `src/globals.js`, `src/main.js` – entry (exposes React globals)
@@ -23,4 +24,4 @@ Offline photo-report app for field insurance adjusters. Builds to ONE self-conta
 ## Known limits
 - Photos are stored as base64 data URLs in IndexedDB (~33% bigger than binary). Planned: store Blobs.
 - In-app camera is built and tested with Chromium's FAKE camera only; verify on a real phone. getUserMedia needs https (or localhost): opening the .html from phone file storage will fall back to the phone's camera app.
-- Installable offline PWA is built (manifest, service worker, icons). `docs/` is the committed build output served by GitHub Pages; `npm run build` refreshes it. Backup/export is not built yet.
+- Installable offline PWA is built (manifest, service worker, icons). `docs/` is the committed build output served by GitHub Pages; `npm run build` refreshes it. Backup/export/import is built (JSON file `*.claimphoto.json`, merge on import, never deletes; hostile image fields stripped). Not yet done: Blob photo storage, real PDF generation, template-fidelity check.

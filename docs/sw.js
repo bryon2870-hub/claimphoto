@@ -1,5 +1,5 @@
-// Offline-first service worker. aaca54de05 is replaced at build time so every release gets a fresh cache.
-const CACHE = "claimphoto-aaca54de05";
+// Offline-first service worker. 8fe0c0dd1d is replaced at build time so every release gets a fresh cache.
+const CACHE = "claimphoto-8fe0c0dd1d";
 const ASSETS = ["./", "./index.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", "./icon-maskable-512.png", "./apple-touch-icon.png"];
 
 self.addEventListener("install", (e) => {

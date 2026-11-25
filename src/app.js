@@ -1,5 +1,7 @@
 "use strict";
 import { CameraCapture } from "./camera.jsx";
+import { BackupPanel, backupIsStale } from "./BackupPanel.jsx";
+import { buildBackup, backupFilename, downloadText, mergeByName, mergeStrings } from "./backup.js";
 
 const {
   useState,
@@ -53,7 +55,8 @@ const LS = Object.freeze({
   lay: "cp5_lay",
   users: "cp5_users",
   auid: "cp5_auid",
-  macros: "cp5_macros"
+  macros: "cp5_macros",
+  lastBackup: "cp5_lastbackup"
 });
 const ACCENT_COLORS = ["#2563EB", "#7C3AED", "#0891B2", "#059669", "#DC2626", "#D97706"];
 
@@ -226,6 +229,57 @@ const projMeta = p => {
     claimNum: ((_p$claim2 = p.claim) === null || _p$claim2 === void 0 ? void 0 : _p$claim2.claimNum) || ""
   };
 };
+
+// ── Backup helpers (used by BackupPanel / dashboard export) ──────────────────
+// App assigns this so exports include edits still waiting in the autosave debounce.
+let flushPending = async () => {};
+async function backupLoadAll() {
+  await flushPending();
+  return {
+    projects: await IDB.all(),
+    companies: lsGet(LS.cos, []),
+    users: lsGet(LS.users, []),
+    macros: lsGet(LS.macros, {
+      labels: [],
+      notes: []
+    })
+  };
+}
+async function backupApplyImport(parsed, plan) {
+  await flushPending();
+  for (const p of [...plan.add, ...plan.update]) await IDB.save(p);
+  const all = await IDB.all();
+  lsSet(LS.plist, all.map(projMeta).sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt)));
+  lsSet(LS.cos, mergeByName(lsGet(LS.cos, []), parsed.companies).list);
+  lsSet(LS.users, mergeByName(lsGet(LS.users, []), parsed.users).list);
+  const cur = lsGet(LS.macros, {
+    labels: [],
+    notes: []
+  });
+  lsSet(LS.macros, {
+    labels: mergeStrings(cur.labels || [], parsed.macros.labels).list,
+    notes: mergeStrings(cur.notes || [], parsed.macros.notes).list
+  });
+  return {
+    added: plan.add.length,
+    updated: plan.update.length,
+    skipped: plan.skip.length
+  };
+}
+async function exportOneReport(id) {
+  await flushPending();
+  const p = await IDB.load(id);
+  if (!p) throw new Error("Report not found");
+  downloadText(backupFilename("report", new Date(), p.name), JSON.stringify(buildBackup({
+    projects: [p],
+    companies: lsGet(LS.cos, []),
+    users: lsGet(LS.users, []),
+    macros: lsGet(LS.macros, {
+      labels: [],
+      notes: []
+    })
+  }, "report")));
+}
 
 // ── Shared leaf components (module-level — no remount) ───────────────────────
 // ── MacroSelect: dropdown for labels or notes with manage/add functionality ───
@@ -1750,6 +1804,10 @@ function AppHeader({
   const [showProj, setShowProj] = useState(false);
   const [showCo, setShowCo] = useState(false);
   const [showUser, setShowUser] = useState(false);
+  const [showBackup, setShowBackup] = useState(false);
+  const [lastBackup, setLastBackup] = useState(() => lsGet(LS.lastBackup, 0));
+  const closeBackup = useCallback(() => setShowBackup(false), []);
+  const photoTotal = projList.reduce((n, p) => n + (p.photoCount || 0), 0);
   const closeProj = useCallback(() => setShowProj(false), []);
   const closeCo = useCallback(() => setShowCo(false), []);
   const closeUser = useCallback(() => setShowUser(false), []);
@@ -1778,6 +1836,28 @@ function AppHeader({
   }, "🖨 ", /*#__PURE__*/React.createElement("span", {
     className: "hdr-btn-label"
   }, "Print / PDF")), /*#__PURE__*/React.createElement("div", {
+    className: "dd-wrap"
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "hdr-btn",
+    onClick: () => setShowBackup(v => !v),
+    "aria-label": "Backup and restore",
+    "data-testid": "backup-btn"
+  }, "💾", backupIsStale(lastBackup, photoTotal) && /*#__PURE__*/React.createElement("span", {
+    className: "bk-dot",
+    "data-testid": "backup-dot"
+  }), " ", /*#__PURE__*/React.createElement("span", {
+    className: "hdr-btn-label"
+  }, "Backup"), " ▾"), showBackup && /*#__PURE__*/React.createElement(BackupPanel, {
+    loadAll: backupLoadAll,
+    applyImport: backupApplyImport,
+    lastBackup: lastBackup,
+    onBackedUp: ts => {
+      lsSet(LS.lastBackup, ts);
+      setLastBackup(ts);
+    },
+    photoTotal: photoTotal,
+    onClose: closeBackup
+  })), /*#__PURE__*/React.createElement("div", {
     className: "dd-wrap"
   }, /*#__PURE__*/React.createElement("button", {
     className: "hdr-btn",
@@ -1921,7 +2001,8 @@ function ReportCard({
   proj,
   isActive,
   onOpen,
-  onDelete
+  onDelete,
+  onExport
 }) {
   var _proj$photos, _proj$photos2, _proj$claim, _proj$claim2, _proj$photos3;
   const accent = accentFor(proj.id);
@@ -1985,7 +2066,12 @@ function ReportCard({
       gap: 6
     },
     onClick: e => e.stopPropagation()
-  }, !isActive && /*#__PURE__*/React.createElement("button", {
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-xs",
+    onClick: () => onExport && onExport(proj.id),
+    title: "Save this report as a file",
+    "data-testid": "export-one"
+  }, "Export"), !isActive && /*#__PURE__*/React.createElement("button", {
     className: "btn btn-xs btn-danger",
     onClick: () => onDelete(proj.id)
   }, "Delete"), /*#__PURE__*/React.createElement("button", {
@@ -1998,7 +2084,8 @@ function Dashboard({
   activeId,
   onOpen,
   onDelete,
-  onNew
+  onNew,
+  onExport
 }) {
   return /*#__PURE__*/React.createElement("div", {
     className: "page"
@@ -2027,6 +2114,7 @@ function Dashboard({
   }, [...projList].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)).map(p => /*#__PURE__*/React.createElement(ReportCard, {
     key: p.id,
     proj: p,
+    onExport: onExport,
     isActive: p.id === activeId,
     onOpen: onOpen,
     onDelete: onDelete
@@ -3783,6 +3871,27 @@ function App() {
   };
   // Latest unsaved snapshot, so it can be flushed immediately if the page is hidden/closed
   const pendingRef = useRef(null);
+  // Save any edit still waiting in the debounce right now (used before backups/exports)
+  const flushNow = useCallback(async () => {
+    const proj = pendingRef.current;
+    if (!proj) return;
+    pendingRef.current = null;
+    clearTimeout(saveTimer.current);
+    try {
+      await IDB.save(proj);
+      const meta = projMeta(proj);
+      setProjList(ps => {
+        const u = ps.some(p => p.id === proj.id) ? ps.map(p => p.id === proj.id ? meta : p) : [...ps, meta];
+        lsSet(LS.plist, u);
+        return u;
+      });
+    } catch (e) {
+      console.warn("Flush error", e);
+    }
+  }, []);
+  useEffect(() => {
+    flushPending = flushNow;
+  }, [flushNow]);
   useEffect(() => {
     if (!ready || !activeId) return;
     clearTimeout(saveTimer.current);
@@ -4266,7 +4375,15 @@ function App() {
     activeId: activeId,
     onOpen: loadProject,
     onDelete: deleteProject,
-    onNew: newProject
+    onNew: newProject,
+    onExport: async id => {
+      try {
+        await exportOneReport(id);
+        toast("Report saved as a file");
+      } catch (e) {
+        toast("Export failed");
+      }
+    }
   }), screen === "editor" && /*#__PURE__*/React.createElement("div", {
     className: "page",
     style: {

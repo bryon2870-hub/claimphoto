@@ -20,6 +20,18 @@ function serveSite() {
   return new Promise((r) => srv.listen(0, "127.0.0.1", () => r({ srv, url: "http://127.0.0.1:" + srv.address().port + "/" })));
 }
 
+
+async function openBackup(p) { await p.click('[data-testid="backup-btn"]'); await p.waitForSelector('[data-testid="backup-panel"]'); }
+async function exportAllFile(p) {
+  await openBackup(p);
+  const [dl] = await Promise.all([p.waitForEvent("download"), p.click('[data-testid="export-all"]')]);
+  return { name: dl.suggestedFilename(), text: fs.readFileSync(await dl.path(), "utf8") };
+}
+async function importText(p, text, name = "backup.claimphoto.json") {
+  await openBackup(p);
+  await p.setInputFiles('[data-testid="import-input"]', { name, mimeType: "application/json", buffer: Buffer.from(text) });
+}
+
 async function makeImages(page, n) {
   const urls = await page.evaluate((n) => {
     const out = [];
@@ -64,7 +76,7 @@ async function createReportWithPhotos(page, n = 4, name = "Smoke Test") {
   await page.setInputFiles("input[type=file]", await makeImages(page, n));
   await page.waitForSelector('select:has-text("Select or add label")', { timeout: 15000 });
   await labelAll(page, n);
-  await page.click(`button:has-text("Add ${n} photos")`);
+  await page.click(`button:has-text("Add ${n} photo")`); // matches "photo" and "photos"
   await page.waitForSelector(`button:has-text("Photos (${n})")`);
 }
 
@@ -193,6 +205,95 @@ async function openReport(page, name = "Cam Test") {
     if (bad.length) throw new Error("controls off-screen or <44px: " + bad.join(", "));
   }));
 
+
+
+  await test("backup: export all contains reports + photos; reminder dot clears", async (p) => {
+    await createReportWithPhotos(p, 2, "Backup Src");
+    await p.waitForSelector('[data-testid="backup-dot"]'); // photos exist, never backed up
+    const f = await exportAllFile(p); // no wait: must include edits still in the autosave debounce
+    if (!/^ClaimPhoto-backup-\d{4}-\d{2}-\d{2}\.claimphoto\.json$/.test(f.name)) throw new Error("bad filename " + f.name);
+    const d = JSON.parse(f.text);
+    const r = d.projects.find((x) => x.name === "Backup Src");
+    if (d.app !== "ClaimPhoto" || !r) throw new Error("report missing from export");
+    if (r.photos.length !== 2 || !r.photos.every((ph) => ph.imageData.startsWith("data:image/jpeg"))) throw new Error("photos missing/invalid in export");
+    await p.waitForSelector("text=/Saved \\d+ report/"); 
+    if (await p.locator('[data-testid="backup-dot"]').count()) throw new Error("reminder dot still showing after export");
+    if (!/just now/.test(await p.locator('[data-testid="last-backup"]').innerText())) throw new Error("last backup time not updated");
+  });
+  await test("backup: restore into a brand-new browser; re-import is a no-op", async (p) => {
+    await createReportWithPhotos(p, 2, "Restore Me");
+    const f = await exportAllFile(p);
+    const q = await newPage();
+    try {
+      await importText(q, f.text);
+      await q.waitForSelector('[data-testid="import-preview"]');
+      if (!/1\s*new/.test(await q.locator('[data-testid="import-preview"]').innerText())) throw new Error("preview should say 1 new");
+      await Promise.all([q.waitForNavigation({ timeout: 8000 }), q.click('[data-testid="import-confirm"]')]);
+      await q.waitForSelector("text=Restore Me");
+      await q.locator("div").filter({ hasText: /Restore Me/ }).locator('button:has-text("Open →"), button:has-text("Continue →")').last().click();
+      await q.waitForSelector('button:has-text("Photos (2)")');
+      await q.locator('button:has-text("Photos")').first().click(); await q.waitForTimeout(400);
+      if (!(await q.$$eval("img", (e) => e.filter((i) => i.naturalWidth > 0).length))) throw new Error("restored photos do not render");
+      // import the same file again: nothing new
+      await importText(q, f.text); await q.waitForSelector('[data-testid="import-preview"]');
+      const txt = await q.locator('[data-testid="import-preview"]').innerText();
+      if (!/0\s*new/.test(txt) || !/1\s*already up to date/.test(txt)) throw new Error("second import not idempotent: " + txt.replace(/\n/g, " "));
+    } finally { await q.context().close(); }
+  });
+  await test("backup: newer copy replaces, same-id different report is kept separately", async (p) => {
+    await createReportWithPhotos(p, 1, "Original");
+    const d = JSON.parse((await exportAllFile(p)).text);
+    // newer copy of the same report
+    const newer = JSON.parse(JSON.stringify(d)); const np = newer.projects.find((x) => x.name === "Original");
+    np.name = "Renamed By Import"; np.updatedAt = new Date(Date.now() + 3600000).toISOString();
+    await importText(p, JSON.stringify(newer)); await p.waitForSelector('[data-testid="import-preview"]');
+    if (!/1\s*newer/.test(await p.locator('[data-testid="import-preview"]').innerText())) throw new Error("should detect 1 newer");
+    await Promise.all([p.waitForNavigation({ timeout: 8000 }), p.click('[data-testid="import-confirm"]')]);
+    await p.waitForSelector("text=Renamed By Import");
+    // same id but a different report (other device): must be added, not overwrite
+    const clash = JSON.parse(JSON.stringify(d)); const cp = clash.projects.find((x) => x.name === "Original");
+    cp.name = "Other Device Report"; cp.createdAt = new Date(0).toISOString();
+    await importText(p, JSON.stringify(clash)); await p.waitForSelector('[data-testid="import-preview"]');
+    if (!/1\s*new/.test(await p.locator('[data-testid="import-preview"]').innerText())) throw new Error("clashing id should import as new");
+    await Promise.all([p.waitForNavigation({ timeout: 8000 }), p.click('[data-testid="import-confirm"]')]);
+    await p.waitForSelector("text=Other Device Report"); await p.waitForSelector("text=Renamed By Import");
+  });
+  await test("backup: bad files are rejected with a clear message", async (p) => {
+    for (const [txt, want] of [["hello world", /isn't a ClaimPhoto backup/], [JSON.stringify({ app: "Other", projects: [] }), /isn't a ClaimPhoto backup/], [JSON.stringify({ app: "ClaimPhoto", version: 99, projects: [] }), /newer version/], [JSON.stringify({ app: "ClaimPhoto", version: 1 }), /damaged/]]) {
+      await importText(p, txt);
+      await p.waitForSelector('[data-testid="backup-msg"]'); const m = await p.locator('[data-testid="backup-msg"]').innerText();
+      if (!want.test(m)) throw new Error("unexpected message: " + m);
+      if (await p.locator('[data-testid="import-preview"]').count()) throw new Error("preview shown for a bad file");
+    }
+  });
+  await test("backup: hostile image fields are stripped on import", async (p) => {
+    const evil = { app: "ClaimPhoto", version: 1, projects: [{ id: "999", name: "Evil", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-02T00:00:00.000Z", claim: {}, checklist: {}, photos: [{ id: "1", num: 1, label: "Front", imageData: "javascript:alert(1)" }, { id: "2", num: 2, label: "Rear", imageData: "https://evil.example/x.png" }] }] };
+    await importText(p, JSON.stringify(evil)); await p.waitForSelector('[data-testid="import-preview"]');
+    await Promise.all([p.waitForNavigation({ timeout: 8000 }), p.click('[data-testid="import-confirm"]')]);
+    await p.waitForSelector("text=Evil");
+    await p.locator("div").filter({ hasText: /Evil/ }).locator('button:has-text("Open →")').last().click();
+    await p.waitForSelector('button:has-text("Photos (2)")'); await p.locator('button:has-text("Photos")').first().click(); await p.waitForTimeout(300);
+    const bad = await p.$$eval("img", (e) => e.filter((i) => /^(javascript:|https?:)/.test(i.getAttribute("src") || "")).length);
+    if (bad) throw new Error("untrusted image source survived import");
+  });
+  await test("backup: export a single report from the dashboard card", async (p) => {
+    await createReportWithPhotos(p, 1, "Just This One");
+    await p.click("text=← Reports"); await p.waitForSelector("text=Inspection Reports");
+    const [dl] = await Promise.all([p.waitForEvent("download"), p.locator('[data-testid="export-one"]').first().click()]);
+    if (!/Just-This-One/.test(dl.suggestedFilename())) throw new Error("filename should include report name: " + dl.suggestedFilename());
+    const d = JSON.parse(fs.readFileSync(await dl.path(), "utf8"));
+    if (d.kind !== "report" || d.projects.length !== 1 || d.projects[0].name !== "Just This One") throw new Error("single-report export wrong");
+  });
+  await test("backup: storage usage is shown", async (p) => {
+    await openBackup(p); await p.waitForSelector('[data-testid="storage-info"]');
+    if (!/Storage used/.test(await p.locator('[data-testid="storage-info"]').innerText())) throw new Error("no storage text");
+  });
+  await test("phone: backup panel fits the screen", phone(async (p) => {
+    await openBackup(p);
+    const r = await p.locator('[data-testid="backup-panel"]').boundingBox();
+    if (r.x < 0 || r.x + r.width > 391) throw new Error("panel off-screen: x=" + r.x + " w=" + r.width);
+    const btn = await p.locator('[data-testid="export-all"]').boundingBox(); if (btn.height < 44) throw new Error("export button too small to tap");
+  }));
 
   const site = await serveSite();
   await test("PWA: manifest + icons valid, service worker installs", async (p) => {

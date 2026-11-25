@@ -581,6 +581,7 @@ select{cursor:pointer;appearance:none;
 @media(max-width:479px){
   /* Header: icon-only mode for Company/Reports buttons */
   .hdr-btn-label{display:none;}
+  .hdr-btn{padding:0 9px;gap:4px;}
   .logo-sub{display:none;}
   .report-name-input{width:110px;font-size:13px;}
   /* Steps: number-only, no labels */
@@ -738,3 +739,7 @@ select{cursor:pointer;appearance:none;
 .cam-confirm{position:absolute;inset:0;background:#000b;display:flex;align-items:center;justify-content:center;padding:24px;}
 .cam-confirm-box{background:#fff;color:#0f172a;border-radius:16px;padding:20px;width:min(100%,340px);}
 @media (max-width:480px){.cam-strip{visibility:hidden;}}
+
+/* Backup reminder dot on the header button */
+.hdr-btn{position:relative;}
+.bk-dot{position:absolute;top:5px;right:5px;width:9px;height:9px;border-radius:50%;background:var(--amber-500);box-shadow:0 0 0 2px #0f172a;}
